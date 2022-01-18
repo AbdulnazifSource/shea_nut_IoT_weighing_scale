@@ -1,0 +1,12 @@
+[submodule "src/LiquidCrystal_I2C"]
+	path = src/LiquidCrystal_I2C
+	url = https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library.git
+[submodule "src/Adafruit_FONA"]
+	path = src/Adafruit_FONA
+	url = https://github.com/adafruit/Adafruit_FONA.git
+[submodule "src/HX711"]
+	path = src/HX711
+	url = https://github.com/RobTillaart/HX711.git
+[submodule "src/ButtonFever"]
+	path = src/ButtonFever
+	url = https://github.com/mickey9801/ButtonFever.git
