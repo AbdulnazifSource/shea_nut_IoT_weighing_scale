@@ -1,1 +1,1 @@
-# shea_nut_IoT_weighing_scale
+# IoT_weighing_scale
