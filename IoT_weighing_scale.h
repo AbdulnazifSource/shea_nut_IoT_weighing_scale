@@ -1,0 +1,4 @@
+#ifndef IOT_WEIGHING_SCALE
+#define IOT_WEIGHING_SCALE
+
+#endif
