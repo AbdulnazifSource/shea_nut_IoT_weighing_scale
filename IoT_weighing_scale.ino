@@ -24,10 +24,10 @@ int btnPin = 14;
 
 
 BfButtonManager btnManager(btnPin, 4);
-BfButton btn1(BfButton::ANALOG_BUTTON_ARRAY, 0, false, HIGH);
-BfButton btn2(BfButton::ANALOG_BUTTON_ARRAY, 1, false, HIGH);
-BfButton btn3(BfButton::ANALOG_BUTTON_ARRAY, 2, false, HIGH);
-BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3, false, HIGH);
+BfButton btn1(BfButton::ANALOG_BUTTON_ARRAY, 0);
+BfButton btn2(BfButton::ANALOG_BUTTON_ARRAY, 1);
+BfButton btn3(BfButton::ANALOG_BUTTON_ARRAY, 2);
+BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3);
 
 void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 {
