@@ -1,7 +1,7 @@
 #include "IoT_weighing_scale.h"
 
-uint8_t dataPin = 26;
-uint8_t clockPin = 25;
+uint8_t dataPin = 32;
+uint8_t clockPin = 33;
 
 HX711_ADC LoadCell(dataPin, clockPin);
 
@@ -22,7 +22,7 @@ int lcdRows = 2;
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);  
 
 // set button manager and initialize buttons
-int btnPin = 14;
+int btnPin = 34;
 int numberOfbuttons = 4;
 BfButtonManager btnManager(btnPin, numberOfbuttons);
 BfButton btn1(BfButton::ANALOG_BUTTON_ARRAY, 0);
@@ -153,7 +153,7 @@ void loop()
   //int z;
   //z = analogRead(btnPin);
   //if (z > 100) lcd.print(z);
-  btnManager.printReading(14);
+  btnManager.printReading(btnPin);
   btnManager.loop();
   
   static boolean newDataReady = 0;
