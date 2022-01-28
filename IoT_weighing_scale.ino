@@ -24,6 +24,9 @@ int processPin = 19;
 int lcdColumns = 16;
 int lcdRows = 2;
 
+// reset button
+int resetPin = En;
+
 // set LCD address, number of columns and rows
 // if you don't know your display address, run an I2C scanner sketch
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);  
