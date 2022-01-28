@@ -5,13 +5,20 @@ uint8_t clockPin = 33;
 
 HX711_ADC LoadCell(dataPin, clockPin);
 
-float weight, price;
-char blank[] = "         ";
+float price;
 const int calVal_eepromAdress = 0;
 unsigned long t = 0;
 
+// sim module
+int simRXPin = 16;
+int simTXPin = 17;
+int simResetPin = 18;
 
+// buzzer
+int buzzerPin = 23;
 
+// processing indicator LED
+int processPin = 19;
 
 // set the LCD number of columns and rows
 int lcdColumns = 16;
