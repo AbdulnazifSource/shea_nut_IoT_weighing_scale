@@ -1,7 +1,7 @@
 #include "IoT_weighing_scale.h"
 
-uint8_t dataPin = 32;
-uint8_t clockPin = 33;
+uint8_t dataPin = 23;
+uint8_t clockPin = 19;
 
 HX711_ADC LoadCell(dataPin, clockPin);
 
@@ -19,10 +19,10 @@ HardwareSerial sim800l(2);
 Adafruit_FONA gsm = Adafruit_FONA(simResetPin);
 
 // buzzer
-int buzzerPin = 23;
+int buzzerPin = 32;
 
 // processing indicator LED
-int processPin = 19;
+int processPin = 33;
 
 // set the LCD number of columns and rows
 int lcdColumns = 16;
@@ -83,11 +83,11 @@ void smsHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 {
   Serial.print(btn->getID());
   if (pattern == BfButton::SINGLE_PRESS) {
+    Serial.println(" button pressed.");
     char sendto[21] = "09069025946";
     char message[141] = "Hello from digital weighing scale";
     gsm.sendSMS(sendto, message);
     delay(1000);
-    Serial.println(" button pressed.");
     Serial.println("message sent.");
   }
 }
@@ -106,6 +106,10 @@ void setup()
     Serial.println("Could not find sim800l");
   }
 
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(processPin, OUTPUT);
+  digitalWrite(buzzerPin, HIGH);
+  digitalWrite(processPin, HIGH);
   LoadCell.begin();
   //LoadCell.setReverseOutput(); //uncomment to turn a negative output value to positive
   float calibrationValue; // calibration value (see example file "Calibration.ino")
