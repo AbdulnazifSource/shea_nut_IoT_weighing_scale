@@ -13,6 +13,10 @@ unsigned long t = 0;
 int simRXPin = 16;
 int simTXPin = 17;
 int simResetPin = 18;
+// create an instance for serial communication to sim800l module
+HardwareSerial sim800l(2);
+// create an of adafruit_FONA library class
+Adafruit_FONA gsm = Adafruit_FONA(simResetPin);
 
 // buzzer
 int buzzerPin = 23;
@@ -75,14 +79,32 @@ void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
   }
 }
 
+void smsHandler(BfButton *btn, BfButton::press_pattern_t pattern)
+{
+  Serial.print(btn->getID());
+  if (pattern == BfButton::SINGLE_PRESS) {
+    char sendto[21] = "09069025946";
+    char message[141] = "Hello from digital weighing scale";
+    gsm.sendSMS(sendto, message);
+    delay(1000);
+    Serial.println(" button pressed.");
+    Serial.println("message sent.");
+  }
+}
+
 void setup()
 {
-  Serial.begin(9600); //Serial.begin(57600);
+  Serial.begin(9600);
+  sim800l.begin(9600);
   //rtc_clk_cpu_freq_set(RTC_CPU_FREQ_80M);
   delay(10);
-  pinMode(btnPin, OUTPUT);
   Serial.println();
   Serial.println("Starting...");
+
+  
+  if(! gsm.begin(sim800l)) {
+    Serial.println("Could not find sim800l");
+  }
 
   LoadCell.begin();
   //LoadCell.setReverseOutput(); //uncomment to turn a negative output value to positive
@@ -98,10 +120,10 @@ void setup()
   LoadCell.setCalFactor(calibrationValue); // set calibration value (float)
   
   //integrate event handlers to buttons and add buttons to event manager
-  btn1.onPress(pressHandler)
+  btn1.onPress(smsHandler)
       .onDoublePress(pressHandler)     // default timeout
       .onPressFor(pressHandler, 1000); // custom timeout for 1 second
-  btnManager.addButton(&btn1, 200, 230);
+  btnManager.addButton(&btn1, 180, 230);
   btn2.onPress(pressHandler)
       .onDoublePress(pressHandler)     // default timeout
       .onPressFor(pressHandler, 1000); // custom timeout for 1 second
@@ -163,9 +185,18 @@ void loop()
   //int z;
   //z = analogRead(btnPin);
   //if (z > 100) lcd.print(z);
-  btnManager.printReading(btnPin);
+  //btnManager.printReading(btnPin);
   btnManager.loop();
-  
+
+  // setup serial transmission between serial 0 (serial monitor) and serial 2 (sim module)
+  while(Serial.available()) {
+    delay(1);
+    sim800l.write(Serial.read());
+  }
+  while(sim800l.available()) {
+    Serial.write(sim800l.read());
+  }
+
   static boolean newDataReady = 0;
   const int serialPrintInterval = 100; //increase value to slow down serial print activity
 
@@ -176,8 +207,8 @@ void loop()
   if (newDataReady) {
     if (millis() > t + serialPrintInterval) {
       float i = LoadCell.getData();
-      Serial.print("Load_cell output val: ");
-      Serial.println(i);
+      //Serial.print("Load_cell output val: ");
+      //Serial.println(i);
       lcd.clear();
       price = i * 20;
       
