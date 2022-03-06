@@ -14,12 +14,6 @@ int simRXPin = 16;
 int simTXPin = 17;
 int simResetPin = 18;
 
-#define MODEM_UART_BAUD 9600
-#define MODEM_RST 18
-#define MODEM_TX 17
-#define MODEM_RX 16
-
-
 // create an instance for serial communication to sim800l module
 //HardwareSerial sim800l(2);
 
@@ -138,7 +132,7 @@ void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 
 void setup()
 {
-  Serial.begin(9600);
+  SerialMon.begin(9600);
   SerialAT.begin(115200);
   lcd.begin();// initialize LCD
   lcd.backlight();// turn on LCD backlight
