@@ -14,9 +14,6 @@ int simRXPin = 16;
 int simTXPin = 17;
 int simResetPin = 18;
 
-// create an instance for serial communication to sim800l module
-//HardwareSerial sim800l(2);
-
 // Set serial for debug console (to the Serial Monitor)
 #define SerialMon Serial
 // Set serial for AT commands (to the SIM800 module)
@@ -27,15 +24,15 @@ const char gprs_user[] = "web"; // User
 const char gprs_pass[] = "web"; // Password
 const char simPIN[] = "";    // SIM card PIN code, if any
 
-const char hostname[] = "https://reqres.in"; // www.howsmyssl.com
-const char resource[] = "/api/users?page=2";
-int port = 443;
+const char hostname[] = "httpbin.org"; // testmeapp.pythonanywhere.com
+const char resource[] = "/anything"; // 
+int port = 80;
 
 // Layers stack
-TinyGsm sim_modem(SerialAT);
-TinyGsmClient gsm_transpor_layer(sim_modem);
-SSLClient secure_presentation_layer(&gsm_transpor_layer);
-HttpClient http_client = HttpClient(secure_presentation_layer, hostname, port);
+StreamDebugger debugger(SerialAT, SerialMon);
+TinyGsm        sim_modem(debugger);
+TinyGsmClient client(sim_modem);
+HttpClient http_client = HttpClient(client, hostname, port);
 
 // buzzer
 int buzzerPin = 32;
@@ -65,34 +62,34 @@ BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3);
 
 void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 {
-  Serial.print(btn->getID());
+  SerialMon.print(btn->getID());
   switch (pattern)
   {
     case BfButton::SINGLE_PRESS:
-    Serial.println("Button pressed.");
+    SerialMon.println("Button pressed.");
     //LoadCell.tareNoDelay();
     LoadCell.tare();
     // check if last tare operation is complete:
     if (LoadCell.getTareStatus() == true) {
-      Serial.println("Tare complete");
+      SerialMon.println("Tare complete");
     }
     break;
     case BfButton::DOUBLE_PRESS:
-    Serial.println("Button double pressed.");
+    SerialMon.println("Button double pressed.");
     //LoadCell.tareNoDelay();
     LoadCell.tare();
     // check if last tare operation is complete:
     if (LoadCell.getTareStatus() == true) {
-      Serial.println("Tare complete");
+      SerialMon.println("Tare complete");
     }
     break;
     case BfButton::LONG_PRESS:
-    Serial.println("Button Long pressed.");
+    SerialMon.println("Button Long pressed.");
     //LoadCell.tareNoDelay();
     LoadCell.tare();
     // check if last tare operation is complete:
     if (LoadCell.getTareStatus() == true) {
-      Serial.println("Tare complete");
+      SerialMon.println("Tare complete");
     }
     break;
   }
@@ -100,35 +97,97 @@ void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 
 void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern)
 {
-  Serial.print(btn->getID());
+  SerialMon.print(btn->getID());
   if (pattern == BfButton::SINGLE_PRESS) {
-    Serial.println(" button pressed.");
+    SerialMon.println(" button pressed.");
+    //SSL OPTION
+    //sim_modem.sendAT(GF("+SSLOPT=1,1"));
+    //sim_modem.waitResponse();
+    // Connect to APN
+    SerialMon.print(F("Connecting to APN: "));
+    SerialMon.print(apn);
+    if (sim_modem.gprsConnect(apn, gprs_user, gprs_pass)) {
+      SerialMon.println(" OK");
+    } else {
+      SerialMon.println(" fail");
+    }
+    
     // HTTP Test
     if (sim_modem.isGprsConnected()) {
-      Serial.println("");
-      Serial.println("Making GET request");
+      /*
+      sim_modem.sendAT(GF("+HTTPINIT")); //Init HTTP service
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPPARA=\"CID\",1"));
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPPARA=\"REDIR\",1")); //Set the redirection parameter
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPPARA=\"URL\",\"testmeapp.pythonanywhere.com\""));
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPGETHEAD=1"));
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPSTATUS?"));
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPACTION=0")); //GET session start
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPSTATUS?"));
+      sim_modem.waitResponse();
+      sim_modem.sendAT(GF("+HTTPREAD"));
+      sim_modem.waitResponse();
+      delay(10000);
+      sim_modem.sendAT(GF("+HTTPTERM")); //Terminate HTTP service
+      sim_modem.waitResponse();
+      
+      
+      SerialMon.print("Connecting to ");
+      SerialMon.println(hostname);
+      if (!client.connect(hostname, port)) {
+        SerialMon.println(" fail");
+        delay(10000);
+      } else {
+        SerialMon.println(" success");
+        // Make a HTTP GET request:
+        SerialMon.println("Performing HTTP GET request...");
+        client.print(String("GET ") + resource + " HTTP/1.1\r\n");
+        client.print(String("Host: ") + hostname + "\r\n");
+        client.print("Connection: close\r\n\r\n");
+        client.println();
+      }
+  
+
+      uint32_t timeout = millis();
+      while (client.connected() && millis() - timeout < 10000L) {
+        // Print available data
+        while (client.available()) {
+          char c = client.read();
+          SerialMon.print(c);
+          timeout = millis();
+        }
+      }
+      */
+      SerialMon.println();
+      SerialMon.println("");
+      SerialMon.println("Making GET request");
       http_client.get(resource);
 
       int status_code = http_client.responseStatusCode();
       String response = http_client.responseBody();
 
-      Serial.print("Status code: ");
-      Serial.println(status_code);
-      Serial.print("Response: ");
-      Serial.println(response);
+      SerialMon.print("Status code: ");
+      SerialMon.println(status_code);
+      SerialMon.print("Response: ");
+      SerialMon.println(response);
 
       http_client.stop();
     } else {
-      Serial.println("...not connected");
+      SerialMon.println("...not connected");
     }
-
+    
     // Disconnect GPRS
-    //sim_modem.gprsDisconnect();
-    //SerialMon.println("GPRS disconnected");
+    sim_modem.gprsDisconnect();
+    SerialMon.println("GPRS disconnected");
     delay(1000);
   }
 }
-
 
 void setup()
 {
@@ -138,9 +197,6 @@ void setup()
   lcd.backlight();// turn on LCD backlight
   lcd.clear();
   lcd.print("Starting...");
-  
-  //Add CA Certificate
-  secure_presentation_layer.setCACert(root_ca);
   
   SerialMon.print("Initializing modem...");
   if (!sim_modem.init()) {
@@ -155,28 +211,25 @@ void setup()
   } else {
     SerialMon.println(" OK");
   }
-
+  // General information
+  String name = sim_modem.getModemName();
+  Serial.println("Modem Name: " + name);
+  String modem_info = sim_modem.getModemInfo();
+  Serial.println("Modem Info: " + modem_info);
+  
   // Unlock your SIM card with a PIN if needed
   if (strlen(simPIN) && sim_modem.getSimStatus() != 3) {
     sim_modem.simUnlock(simPIN);
   }
-
+  
   // Wait for network availability
   SerialMon.print("Waiting for network...");
-  if (sim_modem.waitForNetwork(240000L)) {
+  if (sim_modem.waitForNetwork(10000L)) { //240000L
     SerialMon.println(" OK");
     // Connect to the GPRS network
     SerialMon.print("Connecting to network...");
     if (sim_modem.isNetworkConnected()) {
       SerialMon.println(" OK");
-      // Connect to APN
-      SerialMon.print(F("Connecting to APN: "));
-      SerialMon.print(apn);
-      if (sim_modem.gprsConnect(apn, gprs_user, gprs_pass)) {
-        SerialMon.println(" OK");
-      } else {
-        SerialMon.println(" fail");
-      }
     } else {
       SerialMon.println(" fail");
     }
@@ -185,16 +238,14 @@ void setup()
   }
   
   // More info..
-  Serial.println("");
   IPAddress local = sim_modem.localIP();
-  Serial.println("Local IP: " + String(local));
+  SerialMon.println("Local IP: " + String(local));
   int csq = sim_modem.getSignalQuality();
-  Serial.println("Signal quality: " + String(csq));
-
+  SerialMon.println("Signal quality: " + String(csq));
+  
   //rtc_clk_cpu_freq_set(RTC_CPU_FREQ_80M);
-  delay(10);
-  Serial.println();
-  Serial.println("Starting...");
+  SerialMon.println();
+  SerialMon.println("Starting...");
 
   
   pinMode(buzzerPin, OUTPUT);
@@ -218,7 +269,7 @@ void setup()
   btn1.onPress(httpRequestHandler)
       .onDoublePress(pressHandler)     // default timeout
       .onPressFor(pressHandler, 1000); // custom timeout for 1 second
-  btnManager.addButton(&btn1, 180, 230);
+  btnManager.addButton(&btn1, 180, 250);
   btn2.onPress(pressHandler)
       .onDoublePress(pressHandler)     // default timeout
       .onPressFor(pressHandler, 1000); // custom timeout for 1 second
@@ -232,9 +283,7 @@ void setup()
       .onPressFor(pressHandler, 1000); // custom timeout for 1 second
   btnManager.addButton(&btn4, 900, 1100);
   btnManager.begin();
-  
-  Serial.println("Startup is complete");
-
+  SerialMon.println("Startup is complete");
 }
 
 
@@ -247,7 +296,7 @@ void loop()
   btnManager.loop();
   
   // setup serial transmission between serial 0 (serial monitor) and serial 2 (sim module)
-  while(Serial.available()) {
+  while(SerialMon.available()) {
     delay(1); 
     SerialAT.write(SerialMon.read());
   }
@@ -256,7 +305,7 @@ void loop()
   }
   /**/
   static boolean newDataReady = 0;
-  const int serialPrintInterval = 100; //increase value to slow down serial print activity
+  const int serialPrintInterval = 230; //increase value to slow down serial print activity
 
   // check for new data/start next conversion:
   if (LoadCell.update()) newDataReady = true;
@@ -272,7 +321,7 @@ void loop()
       
       //set display
       lcd.setCursor(0, 0);
-      lcd.print("price: N");
+      lcd.print("N");
       if(price < 0)
         lcd.print("0");
       else
