@@ -24,8 +24,8 @@ const char gprs_user[] = "web"; // User
 const char gprs_pass[] = "web"; // Password
 const char simPIN[] = "";    // SIM card PIN code, if any
 
-const char hostname[] = "httpbin.org"; // testmeapp.pythonanywhere.com
-const char resource[] = "/anything"; // 
+const char hostname[] = "nazifapis.pythonanywhere.com"; //arduinojson.org httpbin.org
+const char resource[] = "/api/v1/initialize.json"; // /example.json /anything 
 int port = 80;
 
 // Layers stack
@@ -167,7 +167,11 @@ void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern)
       SerialMon.println();
       SerialMon.println("");
       SerialMon.println("Making GET request");
+
+      http_client.beginRequest();
       http_client.get(resource);
+      http_client.sendHeader(HTTP_HEADER_CONTENT_TYPE, "application/json");
+      http_client.endRequest();
 
       int status_code = http_client.responseStatusCode();
       String response = http_client.responseBody();
@@ -176,7 +180,7 @@ void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern)
       SerialMon.println(status_code);
       SerialMon.print("Response: ");
       SerialMon.println(response);
-
+      
       http_client.stop();
     } else {
       SerialMon.println("...not connected");
