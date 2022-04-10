@@ -1,4 +1,10 @@
 #include "IoT_weighing_scale.h"
+int httpRequestType;
+int httpActionType = 0;
+String deviceId, password;
+float calibrationValue, knownMass;
+String httpStatus, postData, responseData;
+String resource = "http://nazifapis.pythonanywhere.com/api/v1/initialize.json"; //arduinojson.org/example.json httpbin.org //anything 
 
 uint8_t dataPin = 23;
 uint8_t clockPin = 19;
@@ -6,7 +12,6 @@ uint8_t clockPin = 19;
 HX711_ADC LoadCell(dataPin, clockPin);
 
 float price;
-const int calVal_eepromAdress = 0;
 unsigned long t = 0;
 
 // sim module
@@ -14,25 +19,18 @@ int simRXPin = 16;
 int simTXPin = 17;
 int simResetPin = 18;
 
+// read buffer
+char charBuffer;
+String strBuffer;
+int maxBufferSize = 30;
+
+// sim module status
+boolean isGsmModuleActive = false;
+
 // Set serial for debug console (to the Serial Monitor)
 #define SerialMon Serial
 // Set serial for AT commands (to the SIM800 module)
 #define SerialAT Serial2
-
-const char apn[] = "web.gprs.mtnnigeria.net";       // Your APN
-const char gprs_user[] = "web"; // User
-const char gprs_pass[] = "web"; // Password
-const char simPIN[] = "";    // SIM card PIN code, if any
-
-const char hostname[] = "nazifapis.pythonanywhere.com"; //arduinojson.org httpbin.org
-const char resource[] = "/api/v1/initialize.json"; // /example.json /anything 
-int port = 80;
-
-// Layers stack
-StreamDebugger debugger(SerialAT, SerialMon);
-TinyGsm        sim_modem(debugger);
-TinyGsmClient client(sim_modem);
-HttpClient http_client = HttpClient(client, hostname, port);
 
 // buzzer
 int buzzerPin = 32;
@@ -60,12 +58,320 @@ BfButton btn2(BfButton::ANALOG_BUTTON_ARRAY, 1);
 BfButton btn3(BfButton::ANALOG_BUTTON_ARRAY, 2);
 BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3);
 
-void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
-{
+void reset(BfButton *btn, BfButton::press_pattern_t pattern) {
+  int deviceIdAddress = 0, passwordAddress = 100, calibrationValueAddress = 110, knownMassAddress = 120;
+  deviceId = "";
+  password = "";
+  calibrationValue = 832.10;
+  knownMass = 1000.0;
+
+  SerialMon.println(" button pressed.");
+  SerialMon.println("Clearing EEPROM...");
+  for( int i = 0; i < 512; i++) {
+    EEPROM.write(i, 0);
+  }
+  SerialMon.println("EEPROM Clear Done!");
+
+  EEPROM.put(deviceIdAddress, deviceId);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.commit();
+#endif
+  EEPROM.put(passwordAddress, password);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.commit();
+#endif
+  EEPROM.put(calibrationValueAddress, calibrationValue);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.commit();
+#endif  
+  EEPROM.put(knownMassAddress, knownMass);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.commit();
+#endif
+/*#if defined(ESP8266)|| defined(ESP32)
+    EEPROM.end();
+#endif*/
+  getEepromData();
+}
+
+void getEepromData() {
+  int deviceIdAddress = 0, passwordAddress = 100, calibrationValueAddress = 110, knownMassAddress = 120;
+  SerialMon.println("Reading from EEPROM...");
+  
+  EEPROM.get(deviceIdAddress, deviceId);
+  SerialMon.println("device id: " + deviceId);
+  EEPROM.get(passwordAddress, password);
+  SerialMon.println("password: " + String(password));
+  EEPROM.get(calibrationValueAddress,  calibrationValue);
+  SerialMon.println("cal val: " + String(calibrationValue));
+  EEPROM.get(knownMassAddress, knownMass);
+  SerialMon.println("Known mass: " + String(knownMass));
+}
+
+void setEepromData() {
+  int deviceIdAddress = 0, passwordAddress = 100, calibrationValueAddress = 110, knownMassAddress = 120;
+  SerialMon.println("Writing to EEPROM...");
+  
+  EEPROM.put(deviceIdAddress, deviceId);
+  SerialMon.println("device id: " + deviceId);
+  EEPROM.put(passwordAddress, password);
+  SerialMon.println("password: " + String(password));
+  EEPROM.put(calibrationValueAddress,  calibrationValue);
+  SerialMon.println("cal val: " + String(calibrationValue));
+  EEPROM.put(knownMassAddress, knownMass);
+  SerialMon.println("Known mass: " + String(knownMass));
+}
+
+boolean ATRun(String command, int waitTime=1000, const char* response="OK\r\n") {
+  SerialMon.println("AT" + command);
+  SerialAT.println("AT" + command);
+  if(waitTime == 0) return true;
+  int t = millis();
+  String buffer; 
+  char ch;
+  while(millis() - t < waitTime){
+    if (SerialAT.available()){
+      ch = SerialAT.read();
+      buffer.concat(ch);
+      SerialMon.print(ch);
+      if (buffer.endsWith(response)) return true;
+      if (buffer.endsWith("ERROR\r\n")) return false;
+    }
+  }
+  return false;
+}
+
+String ATParser(const char * delimiter, int start, int stop=-1) {
+  strBuffer = "";
+  String data;
+  int countDelimiter = 0;
+  while(SerialAT.available()) {
+    charBuffer = SerialAT.read();
+    strBuffer.concat(charBuffer);
+    SerialMon.write(charBuffer);
+
+    if ( countDelimiter == stop || strBuffer.endsWith("\r\nOK\r\n") ) break;
+    if ( strBuffer.endsWith("\r\n") && stop == -1 ) break;
+    
+    if ( strBuffer.endsWith(delimiter) ) {
+      countDelimiter++;
+    } else if ( countDelimiter == start ) {
+      data.concat(charBuffer);
+    }
+  }
+  strBuffer = "";
+  return data;
+}
+
+void ATLoop() {
+  while(SerialAT.available()) {
+    charBuffer = SerialAT.read();
+    SerialMon.write(charBuffer);
+    strBuffer.concat(charBuffer);
+
+    if(strBuffer.endsWith("+CMT:")) {
+      parseMessage();
+    }
+    if (strBuffer.endsWith("+HTTPACTION:")) {
+      getHttpResponseStatus();
+    }
+    if (strBuffer.endsWith("+HTTPREAD:")) {
+      getHttpResponseData();
+    }
+  }
+}
+
+void setupGprsConfig(){
+  ATRun("+COPS=0,2");
+  ATRun("+COPS?", 1000, "+COPS:");
+  String networkCode = ATParser("\"", 1, 2);
+  ATRun("+COPS=0,0");
+  ATRun("+SAPBR=3,1,\"Contype\",\"GPRS\"");
+  
+  // MTN Bearer configuration
+  if (networkCode.equals("62130")) {  
+    ATRun("+SAPBR=3,1,\"APN\",\"web.gprs.mtnnigeria.net\"");
+    ATRun("+SAPBR=3,1,\"PWD\",\"web\"");
+    ATRun("+SAPBR=3,1,\"USER\",\"web\"");
+  }
+}
+
+void openGprsConn() {
+  ATRun("+SAPBR=0,1");
+  ATRun("+SAPBR=1,1");
+  // open Http connection
+  ATRun("+HTTPINIT");
+}
+
+void closeGprsConn() {
+  // close Http connection
+  ATRun("+HTTPTERM");
+  //detach device from GPRS
+  ATRun("+SAPBR=0,1");
+}
+
+void sendHttpRequest() {
+  ATRun("+HTTPPARA=\"CID\",1");
+  ATRun("+HTTPPARA=\"REDIR\",1");
+  ATRun("+HTTPPARA=\"CONTENT\",\"application/json\"");
+  ATRun("+HTTPPARA=\"URL\",\"" +  resource + "\"");
+  ATRun("+HTTPPARA=\"Device-Id\",\"" +  deviceId + "\"");
+  
+  if (httpActionType == 1) {
+    ATRun("+HTTPDATA=" + String(postData.length()) + ",20000", false);
+    SerialAT.print(postData);
+  }
+  ATRun("+HTTPACTION=" + String(httpActionType), false);
+}
+
+void getHttpResponseStatus() {
+  httpStatus = ATParser(",", 1, 2);
+  httpStatus.trim();
+  SerialMon.println("http status: " + httpStatus);
+  ATRun("+HTTPREAD", false);
+}
+
+void getHttpResponseData() {
+  const int COMMAND_REQUEST = 1;
+  closeGprsConn();
+  responseData = ATParser("\r\n", 1, 2);
+  responseData.trim();
+  SerialMon.println("Response: " + responseData);
+  if (httpRequestType == COMMAND_REQUEST) {
+    replyMessage();
+  }
+  
+  strBuffer = "";
+}
+
+void sendSms(String number, String message) {
+  String command = "AT+CMGS=\"";
+  command.concat(number);
+  command.concat("\"\r");
+  SerialAT.print(command);
+  delay(200);
+  command = message;
+  command.concat((char) 26);
+  SerialAT.println(command);
+}
+
+void replyMessage() {
+  if (httpStatus == "200") {
+    const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(4);
+    StaticJsonDocument<capacity> doc;
+
+    DeserializationError err = deserializeJson(doc, responseData);
+    // Parse succeeded?
+    if (!err) {
+      String reply = doc["reply"].as<String>();
+      String phone_number = doc["phone_number"].as<String>();
+      String device_id = doc["data"]["device_id"].as<String>();
+      if (device_id) {
+        deviceId = device_id;
+        setEepromData();
+      }
+      sendSms(phone_number, reply);
+      
+    } else {
+      SerialMon.print("deserializeJson failed");
+      SerialMon.println(err.f_str());
+    }
+  }
+}
+
+void processRequest(String contactNumber, String message) {
+  const size_t capacity = JSON_OBJECT_SIZE(2);
+  StaticJsonDocument<capacity> doc;
+  const int COMMAND_REQUEST = 1;
+  String reply;
+
+  message.toLowerCase();
+  if (message.startsWith("wd")) {
+    openGprsConn();
+    httpRequestType = COMMAND_REQUEST;
+    httpActionType = 1;
+    resource = "http://nazifapis.pythonanywhere.com/api/v1/smsrequest";
+
+    postData = "";
+    doc["message"] = message;
+    doc["phone_number"] = contactNumber;
+    serializeJson(doc, postData);
+    SerialMon.println("post Data: " + postData);
+    sendHttpRequest();
+  }
+}
+
+void parseMessage() {
+  String contactNumber  = ATParser("\"", 1, 2);
+  String message  = ATParser("\r\n", 1, 2);
+  
+  message.trim();
+
+  SerialMon.println("number: " + contactNumber);
+  SerialMon.println("message: " + message);
+  processRequest(contactNumber, message);
+}
+
+boolean initializeGsmModem() {
+  SerialMon.println("Initializing modem...");
+  int timer = millis();
+  while(millis() - timer < 5000){
+    if (ATRun("")) {
+      SerialMon.println("Modem initialzation successful");
+      return true;
+    }
+  }
+  return false;
+}
+
+boolean checkNetworkReg() {
+  ATRun("+CREG?", 2000, "+CREG:");
+  String regStatus  = ATParser(",", 1);
+  regStatus.trim();
+  if (regStatus.equals("1") || regStatus.equals("5")) return true;
+  return false;
+}
+
+boolean waitNetworkReg() {
+  SerialMon.println("Waiting for network...");
+  int timer = millis();
+  
+  while((millis() - timer < 12000)) {
+    if (checkNetworkReg()) {
+      SerialMon.println("Network available");
+      return true;
+    } else {
+      SerialMon.println(" fail");
+    }
+  }
+  return false;
+}
+
+String checkSignalQuality() {
+    ATRun("+CSQ", 1000, "+CSQ:");
+    String signalQ = ATParser(",", 0, 1);
+    signalQ.trim();
+    signalQ = (signalQ.toDouble() / 31 * 100) + String("%");
+    SerialMon.println("");
+    SerialMon.println("Signal quality: " + signalQ);
+    return signalQ;
+}
+
+void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern) {
   SerialMon.print(btn->getID());
-  switch (pattern)
-  {
-    case BfButton::SINGLE_PRESS:
+  if (pattern == BfButton::SINGLE_PRESS) {
+    SerialMon.println(" button pressed.");
+    SerialMon.println("");
+    SerialMon.println("Making GET request");
+    
+    openGprsConn();
+    sendHttpRequest();
+  }
+}
+
+void tare(BfButton *btn, BfButton::press_pattern_t pattern) {
+  SerialMon.print(btn->getID());
+  if ( BfButton::SINGLE_PRESS == pattern) {
     SerialMon.println("Button pressed.");
     //LoadCell.tareNoDelay();
     LoadCell.tare();
@@ -73,123 +379,28 @@ void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern)
     if (LoadCell.getTareStatus() == true) {
       SerialMon.println("Tare complete");
     }
-    break;
-    case BfButton::DOUBLE_PRESS:
-    SerialMon.println("Button double pressed.");
-    //LoadCell.tareNoDelay();
-    LoadCell.tare();
-    // check if last tare operation is complete:
-    if (LoadCell.getTareStatus() == true) {
-      SerialMon.println("Tare complete");
-    }
-    break;
-    case BfButton::LONG_PRESS:
-    SerialMon.println("Button Long pressed.");
-    //LoadCell.tareNoDelay();
-    LoadCell.tare();
-    // check if last tare operation is complete:
-    if (LoadCell.getTareStatus() == true) {
-      SerialMon.println("Tare complete");
-    }
-    break;
   }
 }
 
-void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern)
-{
+void calibration(BfButton *btn, BfButton::press_pattern_t pattern) {
+  int calibrationValueAddress = 110;
+  LoadCell.refreshDataSet(); //refresh the dataset to be sure that the known mass is measured correct
+  calibrationValue = LoadCell.getNewCalibration(knownMass); //get the new calibration value
+  EEPROM.put(calibrationValueAddress, calibrationValue);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.commit();
+#endif
+  SerialMon.println("Calibration complete");
+  SerialMon.println("new calibration value: " + String(calibrationValue));
+}
+
+void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern) {
   SerialMon.print(btn->getID());
-  if (pattern == BfButton::SINGLE_PRESS) {
-    SerialMon.println(" button pressed.");
-    //SSL OPTION
-    //sim_modem.sendAT(GF("+SSLOPT=1,1"));
-    //sim_modem.waitResponse();
-    // Connect to APN
-    SerialMon.print(F("Connecting to APN: "));
-    SerialMon.print(apn);
-    if (sim_modem.gprsConnect(apn, gprs_user, gprs_pass)) {
-      SerialMon.println(" OK");
-    } else {
-      SerialMon.println(" fail");
-    }
-    
-    // HTTP Test
-    if (sim_modem.isGprsConnected()) {
-      /*
-      sim_modem.sendAT(GF("+HTTPINIT")); //Init HTTP service
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPPARA=\"CID\",1"));
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPPARA=\"REDIR\",1")); //Set the redirection parameter
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPPARA=\"URL\",\"testmeapp.pythonanywhere.com\""));
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPGETHEAD=1"));
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPSTATUS?"));
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPACTION=0")); //GET session start
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPSTATUS?"));
-      sim_modem.waitResponse();
-      sim_modem.sendAT(GF("+HTTPREAD"));
-      sim_modem.waitResponse();
-      delay(10000);
-      sim_modem.sendAT(GF("+HTTPTERM")); //Terminate HTTP service
-      sim_modem.waitResponse();
-      
-      
-      SerialMon.print("Connecting to ");
-      SerialMon.println(hostname);
-      if (!client.connect(hostname, port)) {
-        SerialMon.println(" fail");
-        delay(10000);
-      } else {
-        SerialMon.println(" success");
-        // Make a HTTP GET request:
-        SerialMon.println("Performing HTTP GET request...");
-        client.print(String("GET ") + resource + " HTTP/1.1\r\n");
-        client.print(String("Host: ") + hostname + "\r\n");
-        client.print("Connection: close\r\n\r\n");
-        client.println();
-      }
-  
-
-      uint32_t timeout = millis();
-      while (client.connected() && millis() - timeout < 10000L) {
-        // Print available data
-        while (client.available()) {
-          char c = client.read();
-          SerialMon.print(c);
-          timeout = millis();
-        }
-      }
-      */
-      SerialMon.println();
-      SerialMon.println("");
-      SerialMon.println("Making GET request");
-
-      http_client.beginRequest();
-      http_client.get(resource);
-      http_client.sendHeader(HTTP_HEADER_CONTENT_TYPE, "application/json");
-      http_client.endRequest();
-
-      int status_code = http_client.responseStatusCode();
-      String response = http_client.responseBody();
-
-      SerialMon.print("Status code: ");
-      SerialMon.println(status_code);
-      SerialMon.print("Response: ");
-      SerialMon.println(response);
-      
-      http_client.stop();
-    } else {
-      SerialMon.println("...not connected");
-    }
-    
-    // Disconnect GPRS
-    sim_modem.gprsDisconnect();
-    SerialMon.println("GPRS disconnected");
-    delay(1000);
+  switch (pattern)
+  {
+    case BfButton::SINGLE_PRESS:
+    getEepromData();
+    break;
   }
 }
 
@@ -197,55 +408,35 @@ void setup()
 {
   SerialMon.begin(9600);
   SerialAT.begin(115200);
+#if defined(ESP8266)|| defined(ESP32)
+  EEPROM.begin(512); // uncomment this if you use ESP8266/ESP32 and want to fetch the calibration value from eeprom
+#endif  
+  getEepromData();
+  
   lcd.begin();// initialize LCD
   lcd.backlight();// turn on LCD backlight
   lcd.clear();
   lcd.print("Starting...");
+
+
+  isGsmModuleActive = initializeGsmModem();
   
-  SerialMon.print("Initializing modem...");
-  if (!sim_modem.init()) {
-    SerialMon.print(" fail... restarting modem...");
-    // Restart takes quite some time
-    // Use modem.init() if you don't need the complete restart
-    if (!sim_modem.restart()) {
-      SerialMon.println(" fail... even after restart");
-    } else {
-      SerialMon.println(" OK");
+  if (isGsmModuleActive) {
+    
+    if( waitNetworkReg() ) {
+      
+      checkSignalQuality();
+      
+      // sms settings
+      ATRun("+CMGF=1"); // change sms message format to text mode
+      ATRun("+CNMI=2,2,0,0,0"); // send incoming sms directly to serial buffer
+
+      setupGprsConfig();
     }
-  } else {
-    SerialMon.println(" OK");
-  }
-  // General information
-  String name = sim_modem.getModemName();
-  Serial.println("Modem Name: " + name);
-  String modem_info = sim_modem.getModemInfo();
-  Serial.println("Modem Info: " + modem_info);
-  
-  // Unlock your SIM card with a PIN if needed
-  if (strlen(simPIN) && sim_modem.getSimStatus() != 3) {
-    sim_modem.simUnlock(simPIN);
-  }
-  
-  // Wait for network availability
-  SerialMon.print("Waiting for network...");
-  if (sim_modem.waitForNetwork(10000L)) { //240000L
-    SerialMon.println(" OK");
-    // Connect to the GPRS network
-    SerialMon.print("Connecting to network...");
-    if (sim_modem.isNetworkConnected()) {
-      SerialMon.println(" OK");
-    } else {
-      SerialMon.println(" fail");
+    else {
+      SerialMon.print("Network registration failed");
     }
-  } else {
-    SerialMon.println(" fail");
   }
-  
-  // More info..
-  IPAddress local = sim_modem.localIP();
-  SerialMon.println("Local IP: " + String(local));
-  int csq = sim_modem.getSignalQuality();
-  SerialMon.println("Signal quality: " + String(csq));
   
   //rtc_clk_cpu_freq_set(RTC_CPU_FREQ_80M);
   SerialMon.println();
@@ -256,13 +447,12 @@ void setup()
   pinMode(processPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
   digitalWrite(processPin, LOW);
+  
   LoadCell.begin();
   //LoadCell.setReverseOutput(); //uncomment to turn a negative output value to positive
-  float calibrationValue; // calibration value (see example file "Calibration.ino")
-  calibrationValue = 832.10; // uncomment this if you want to set the calibration value in the sketch
-#if defined(ESP8266)|| defined(ESP32)
-  //EEPROM.begin(512); // uncomment this if you use ESP8266/ESP32 and want to fetch the calibration value from eeprom
-#endif
+  
+  // uncomment this if you want to set the calibration value in the sketch
+
   //EEPROM.get(calVal_eepromAdress, calibrationValue); // uncomment this if you want to fetch the calibration value from eeprom
   unsigned long stabilizingtime = 2000; // preciscion right after power-up can be improved by adding a few seconds of stabilizing time
   boolean _tare = true; //set this to false if you don't want tare to be performed in the next step
@@ -270,43 +460,39 @@ void setup()
   LoadCell.setCalFactor(calibrationValue); // set calibration value (float)
   
   //integrate event handlers to buttons and add buttons to event manager
-  btn1.onPress(httpRequestHandler)
-      .onDoublePress(pressHandler)     // default timeout
-      .onPressFor(pressHandler, 1000); // custom timeout for 1 second
+  btn1.onPress(httpRequestHandler); // custom timeout for 1 second
   btnManager.addButton(&btn1, 180, 250);
-  btn2.onPress(pressHandler)
-      .onDoublePress(pressHandler)     // default timeout
-      .onPressFor(pressHandler, 1000); // custom timeout for 1 second
+  btn2.onPress(pressHandler); // custom timeout for 1 second
   btnManager.addButton(&btn2, 490, 550);
-  btn3.onPress(pressHandler)
-      .onDoublePress(pressHandler)     // default timeout
-      .onPressFor(pressHandler, 1000); // custom timeout for 1 second
+  btn3.onPressFor(reset, 5000); // custom timeout for 1 second
   btnManager.addButton(&btn3, 750, 850);
-  btn4.onPress(pressHandler)
-      .onDoublePress(pressHandler)     // default timeout
-      .onPressFor(pressHandler, 1000); // custom timeout for 1 second
+  //.onPress(httpRequestHandler)
+  //.onDoublePress(pressHandler) 
+  btn4.onPress(tare)    // default timeout
+      .onPressFor(calibration, 5000); // custom timeout for 1 second
   btnManager.addButton(&btn4, 900, 1100);
   btnManager.begin();
+
   SerialMon.println("Startup is complete");
 }
-
 
 void loop()
 {
   //int z;
   //z = analogRead(btnPin);
   //if (z > 100) lcd.print(z);
-  //btnManager.printReading(btnPin);
+  btnManager.printReading(btnPin);
   btnManager.loop();
-  
-  // setup serial transmission between serial 0 (serial monitor) and serial 2 (sim module)
-  while(SerialMon.available()) {
-    delay(1); 
-    SerialAT.write(SerialMon.read());
+
+  if(isGsmModuleActive) {
+    // setup serial transmission between serial 0 (serial monitor) and serial 2 (sim module)
+    while(SerialMon.available()) {
+      delay(1); 
+      SerialAT.write(SerialMon.read());
+    }
+    ATLoop();
   }
-  while(SerialAT.available()) {
-    SerialMon.write(SerialAT.read());
-  }
+    
   /**/
   static boolean newDataReady = 0;
   const int serialPrintInterval = 230; //increase value to slow down serial print activity
@@ -341,4 +527,3 @@ void loop()
     }
   }
 }
-
