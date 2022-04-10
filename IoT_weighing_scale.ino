@@ -418,7 +418,6 @@ void setup()
   lcd.clear();
   lcd.print("Starting...");
 
-
   isGsmModuleActive = initializeGsmModem();
   
   if (isGsmModuleActive) {
