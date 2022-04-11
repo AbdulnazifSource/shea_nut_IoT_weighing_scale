@@ -503,7 +503,7 @@ void pressHandler (BfButton *btn, BfButton::press_pattern_t pattern) {
   } else if(id == 3) {
     if (pattern == BfButton::SINGLE_PRES) {
       Serial.println(" pressed.");
-      
+       
     } else if (pattern == BfButton::DOUBLE_PRESSS && httpRequestType == 0) {
       Serial.println(" double pressed.");
       quantityData.available_quantity = 0.00;
