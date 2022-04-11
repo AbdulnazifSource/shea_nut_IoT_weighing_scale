@@ -6,6 +6,20 @@ float calibrationValue, knownMass;
 String httpStatus, postData, responseData;
 String resource = "http://nazifapis.pythonanywhere.com/api/v1/initialize.json"; //arduinojson.org/example.json httpbin.org //anything 
 
+struct Rate {
+  double quantity;
+  double price;
+  char unit[11];
+  char currency[25];
+  boolean active_rate;
+} rateData;
+
+struct Quantity {
+  double available_quantity;
+  char unit[24];
+} quantityData;
+
+
 uint8_t dataPin = 23;
 uint8_t clockPin = 19;
 
@@ -51,14 +65,15 @@ LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 
 // set button manager and initialize buttons
 int btnPin = 34;
-int numberOfbuttons = 4;
+int numberOfbuttons = 5;
 BfButtonManager btnManager(btnPin, numberOfbuttons);
 BfButton btn1(BfButton::ANALOG_BUTTON_ARRAY, 0);
 BfButton btn2(BfButton::ANALOG_BUTTON_ARRAY, 1);
 BfButton btn3(BfButton::ANALOG_BUTTON_ARRAY, 2);
 BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3);
+BfButton btn5(BfButton::ANALOG_BUTTON_ARRAY, 4);
 
-void reset(BfButton *btn, BfButton::press_pattern_t pattern) {
+void reset() {
   int deviceIdAddress = 0, passwordAddress = 100, calibrationValueAddress = 110, knownMassAddress = 120;
   deviceId = "";
   password = "";
@@ -233,14 +248,20 @@ void getHttpResponseStatus() {
 
 void getHttpResponseData() {
   const int COMMAND_REQUEST = 1;
+  const int STATUS_REQUEST = 2;
+  const int QUANTITY_REQUEST = 3;
   closeGprsConn();
   responseData = ATParser("\r\n", 1, 2);
   responseData.trim();
   SerialMon.println("Response: " + responseData);
   if (httpRequestType == COMMAND_REQUEST) {
     replyMessage();
+  } else if (httpRequestType == STATUS_REQUEST) {
+    storeStatus();
+  } else if (httpRequestType == QUANTITY_REQUEST) {
+    storeQuantity();
   }
-  
+
   strBuffer = "";
 }
 
@@ -312,6 +333,74 @@ void parseMessage() {
   processRequest(contactNumber, message);
 }
 
+void storeStatus() {
+  const size_t capacity = JSON_OBJECT_SIZE(2) + JSON_OBJECT_SIZE(5);
+  StaticJsonDocument<capacity> doc;
+  DeserializationError err = deserializeJson(doc, responseData);
+  // Parse succeeded?
+  if (!err) {
+    rateData.quantity = doc["rate"]["quantity"].as<double>();
+    rateData.price = doc["rate"]["price"].as<double>();
+    strlcpy(rateData.unit, doc["rate"]["unit"] | "GRAMME", 11);
+    strlcpy(rateData.currency, doc["rate"]["currency"] | "NAIRA", 25);
+    rateData.active_rate = doc["rate"]["active_rate"].as<boolean>();
+    quantityData.available_quantity = doc["quantity"]["available_quantity"].as<double>();
+    strlcpy(quantityData.unit, doc["quantity"]["unit"] | "GRAMME", 24);
+  } else {
+    SerialMon.print("deserializeJson failed");
+    SerialMon.println(err.f_str());
+  }
+}
+
+void updateStatus() {
+  const int STATUS_REQUEST = 2;
+  const int GET = 0;
+
+  openGprsConn();
+  httpRequestType = STATUS_REQUEST;
+  httpActionType = GET;
+  resource = "http://nazifapis.pythonanywhere.com/api/v1/status";
+
+  sendHttpRequest();
+}
+
+void storeQuantity() {
+  const size_t capacity = JSON_OBJECT_SIZE(2);
+  StaticJsonDocument<capacity> doc;
+  DeserializationError err = deserializeJson(doc, responseData);
+  // Parse succeeded?
+  if (!err) {
+    quantityData.available_quantity = doc["available_quantity"].as<double>();
+    strlcpy(quantityData.unit, doc["unit"] | "GRAMME", 24);
+  } else {
+    SerialMon.print("deserializeJson failed");
+    SerialMon.println(err.f_str());
+  }
+}
+
+void updateQuantity() {
+  const size_t capacity = JSON_OBJECT_SIZE(2);
+  StaticJsonDocument<capacity> doc;
+  const int QUANTITY_REQUEST = 3;
+  const int POST = 1;
+
+  openGprsConn();
+  httpRequestType = QUANTITY_REQUEST;
+  httpActionType = POST;
+  resource = "http://nazifapis.pythonanywhere.com/api/v1/quantity";
+
+  postData = "";
+  
+  doc["available_quantity"] = quantityData.available_quantity;
+  doc["unit"] = quantityData.unit;
+  //doc["available_quantity"] = 0.00;
+  //doc["unit"] = "GRAMME";
+  
+  serializeJson(doc, postData);
+  SerialMon.println("post Data: " + postData);
+  sendHttpRequest();
+}
+
 boolean initializeGsmModem() {
   SerialMon.println("Initializing modem...");
   int timer = millis();
@@ -357,32 +446,16 @@ String checkSignalQuality() {
     return signalQ;
 }
 
-void httpRequestHandler(BfButton *btn, BfButton::press_pattern_t pattern) {
-  SerialMon.print(btn->getID());
-  if (pattern == BfButton::SINGLE_PRESS) {
-    SerialMon.println(" button pressed.");
-    SerialMon.println("");
-    SerialMon.println("Making GET request");
-    
-    openGprsConn();
-    sendHttpRequest();
+void tare() {
+  //LoadCell.tareNoDelay();
+  LoadCell.tare();
+  // check if last tare operation is complete:
+  if (LoadCell.getTareStatus() == true) {
+    SerialMon.println("Tare complete");
   }
 }
 
-void tare(BfButton *btn, BfButton::press_pattern_t pattern) {
-  SerialMon.print(btn->getID());
-  if ( BfButton::SINGLE_PRESS == pattern) {
-    SerialMon.println("Button pressed.");
-    //LoadCell.tareNoDelay();
-    LoadCell.tare();
-    // check if last tare operation is complete:
-    if (LoadCell.getTareStatus() == true) {
-      SerialMon.println("Tare complete");
-    }
-  }
-}
-
-void calibration(BfButton *btn, BfButton::press_pattern_t pattern) {
+void calibration() {
   int calibrationValueAddress = 110;
   LoadCell.refreshDataSet(); //refresh the dataset to be sure that the known mass is measured correct
   calibrationValue = LoadCell.getNewCalibration(knownMass); //get the new calibration value
@@ -394,13 +467,62 @@ void calibration(BfButton *btn, BfButton::press_pattern_t pattern) {
   SerialMon.println("new calibration value: " + String(calibrationValue));
 }
 
-void pressHandler(BfButton *btn, BfButton::press_pattern_t pattern) {
-  SerialMon.print(btn->getID());
-  switch (pattern)
-  {
-    case BfButton::SINGLE_PRESS:
-    getEepromData();
-    break;
+void pressHandler (BfButton *btn, BfButton::press_pattern_t pattern) {
+  int id = btn->getID();
+  Serial.print(String("button ") + id);
+
+  if (id == 0) {
+    if (pattern == BfButton::SINGLE_PRESS) {
+      Serial.println(" pressed.");
+      getEepromData();
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      Serial.println(" double pressed.");
+    } else if (pattern == BfButton::LONG_PRESS) {
+      Serial.println(" long pressed.");
+    }
+  } else if(id == 1) {
+    if (pattern == BfButton::SINGLE_PRESS && httpRequestType == 0) {
+      Serial.println(" pressed.");
+      //getEepromData();
+      updateQuantity();
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      Serial.println(" double pressed.");
+    } else if (pattern == BfButton::LONG_PRESS) {
+      Serial.println(" long pressed.");
+    }
+  } else if(id == 2) {
+    if (pattern == BfButton::SINGLE_PRESS) {
+      Serial.println(" pressed.");
+      
+    } else if (pattern == BfButton::DOUBLE_PRESS && httpRequestType == 0) {
+      Serial.println(" double pressed.");
+      updateStatus();
+    } else if (pattern == BfButton::LONG_PRESS) {
+      Serial.println(" long pressed.");
+    }
+  } else if(id == 3) {
+    if (pattern == BfButton::SINGLE_PRES) {
+      Serial.println(" pressed.");
+      
+    } else if (pattern == BfButton::DOUBLE_PRESSS && httpRequestType == 0) {
+      Serial.println(" double pressed.");
+      quantityData.available_quantity = 0.00;
+      strlcpy(quantityData.unit, "GRAMME", 24);
+      updateQuantity();
+    } else if (pattern == BfButton::LONG_PRESS) {
+      Serial.println(" long pressed.");
+      reset();
+    }
+  } else if(id == 4) {
+    if (pattern == BfButton::SINGLE_PRESS) {
+      Serial.println(" pressed.");
+      tare();
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      Serial.println(" double pressed.");
+    } else if (pattern == BfButton::LONG_PRESS) {
+      Serial.println(" long pressed.");
+      calibration();
+    }
   }
 }
 
@@ -459,17 +581,20 @@ void setup()
   LoadCell.setCalFactor(calibrationValue); // set calibration value (float)
   
   //integrate event handlers to buttons and add buttons to event manager
-  btn1.onPress(httpRequestHandler); // custom timeout for 1 second
+  btn1.onPress(pressHandler); // custom timeout for 1 second
   btnManager.addButton(&btn1, 180, 250);
   btn2.onPress(pressHandler); // custom timeout for 1 second
   btnManager.addButton(&btn2, 490, 550);
-  btn3.onPressFor(reset, 5000); // custom timeout for 1 second
+  btn3.onPress(pressHandler); 
   btnManager.addButton(&btn3, 750, 850);
-  //.onPress(httpRequestHandler)
-  //.onDoublePress(pressHandler) 
-  btn4.onPress(tare)    // default timeout
-      .onPressFor(calibration, 5000); // custom timeout for 1 second
+  btn4.onPress(pressHandler)    // default timeout
+      .onPressFor(pressHandler, 5000); // custom timeout for 1 second
   btnManager.addButton(&btn4, 900, 1100);
+  btn5.onPress(pressHandler)    // default timeout
+      .onPressFor(pressHandler, 5000); // custom timeout for 1 second
+  btnManager.addButton(&btn4, 1250, 1500);
+  //.onPressFor(pressHandler, 5000)// custom timeout for 1 second
+  //.onDoublePress(pressHandler) 
   btnManager.begin();
 
   SerialMon.println("Startup is complete");
