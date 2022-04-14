@@ -1,7 +1,6 @@
 #ifndef IOT_WEIGHING_SCALE
 #define IOT_WEIGHING_SCALE
 #include <Arduino.h>
-#include <HardwareSerial.h>
 #include "src/LiquidCrystal_I2C/LiquidCrystal_I2C.h"
 #include "src/HX711_ADC/HX711_ADC.h"
 #include "src/ButtonFever/BfButton.h"
