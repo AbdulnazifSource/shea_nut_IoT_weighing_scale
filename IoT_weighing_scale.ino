@@ -1,24 +1,60 @@
 #include "IoT_weighing_scale.h"
-int httpRequestType;
+
+// Set serial for debug console (to the Serial Monitor)
+#define SerialMon Serial
+
+// Set serial for AT commands (to the SIM800 module)
+#ifndef __AVR_ATmega328P__
+#define SerialAT Serial2
+
+// or Software Serial on Uno, Nano
+#else
+#include <SoftwareSerial.h>
+SoftwareSerial SerialAT(2, 3);  // RX, TX
+#endif
+
+int httpRequestType = 0;
 int httpActionType = 0;
 String deviceId, password;
 float calibrationValue, knownMass;
 String httpStatus, postData, responseData;
-String resource = "http://nazifapis.pythonanywhere.com/api/v1/initialize.json"; //arduinojson.org/example.json httpbin.org //anything 
-
+String resource = "http://nazifapis.pythonanywhere.com/api/v1/initialize"; //arduinojson.org/example.json httpbin.org //anything 
+ 
 struct Rate {
   double quantity;
   double price;
   char unit[11];
   char currency[25];
   boolean active_rate;
-} rateData;
+};
+Rate rateData;
 
 struct Quantity {
   double available_quantity;
   char unit[24];
-} quantityData;
+};
+Quantity quantityData;
 
+struct Contact {
+  int count;
+  int current;
+  String next;
+  String previous;
+  String message;
+  char phone_numbers[5][15];
+};
+Contact contact;
+
+struct RequestQueue {
+  int action;
+  String message;
+  String phoneNumber;
+};
+
+RequestQueue requestQueue[5];
+int nextRequest = 0;
+
+void (*runRequest)();
 
 uint8_t dataPin = 23;
 uint8_t clockPin = 19;
@@ -41,10 +77,6 @@ int maxBufferSize = 30;
 // sim module status
 boolean isGsmModuleActive = false;
 
-// Set serial for debug console (to the Serial Monitor)
-#define SerialMon Serial
-// Set serial for AT commands (to the SIM800 module)
-#define SerialAT Serial2
 
 // buzzer
 int buzzerPin = 32;
@@ -65,13 +97,14 @@ LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 
 // set button manager and initialize buttons
 int btnPin = 34;
-int numberOfbuttons = 5;
+int numberOfbuttons = 6;
 BfButtonManager btnManager(btnPin, numberOfbuttons);
 BfButton btn1(BfButton::ANALOG_BUTTON_ARRAY, 0);
 BfButton btn2(BfButton::ANALOG_BUTTON_ARRAY, 1);
 BfButton btn3(BfButton::ANALOG_BUTTON_ARRAY, 2);
 BfButton btn4(BfButton::ANALOG_BUTTON_ARRAY, 3);
 BfButton btn5(BfButton::ANALOG_BUTTON_ARRAY, 4);
+BfButton btn6(BfButton::ANALOG_BUTTON_ARRAY, 5);
 
 void reset() {
   int deviceIdAddress = 0, passwordAddress = 100, calibrationValueAddress = 110, knownMassAddress = 120;
@@ -137,9 +170,15 @@ void setEepromData() {
   SerialMon.println("Known mass: " + String(knownMass));
 }
 
-boolean ATRun(String command, int waitTime=1000, const char* response="OK\r\n") {
-  SerialMon.println("AT" + command);
-  SerialAT.println("AT" + command);
+boolean ATRun(String command, int waitTime=2000, const char* response="OK\r\n", boolean data=false) {
+  if (data) {
+    SerialMon.println(command);
+    SerialAT.println(command);
+  } else {
+    SerialMon.println("AT" + command);
+    SerialAT.println("AT" + command);
+  }
+      
   if(waitTime == 0) return true;
   int t = millis();
   String buffer; 
@@ -178,23 +217,7 @@ String ATParser(const char * delimiter, int start, int stop=-1) {
   return data;
 }
 
-void ATLoop() {
-  while(SerialAT.available()) {
-    charBuffer = SerialAT.read();
-    SerialMon.write(charBuffer);
-    strBuffer.concat(charBuffer);
 
-    if(strBuffer.endsWith("+CMT:")) {
-      parseMessage();
-    }
-    if (strBuffer.endsWith("+HTTPACTION:")) {
-      getHttpResponseStatus();
-    }
-    if (strBuffer.endsWith("+HTTPREAD:")) {
-      getHttpResponseData();
-    }
-  }
-}
 
 void setupGprsConfig(){
   ATRun("+COPS=0,2");
@@ -203,7 +226,7 @@ void setupGprsConfig(){
   ATRun("+COPS=0,0");
   ATRun("+SAPBR=3,1,\"Contype\",\"GPRS\"");
   
-  // MTN Bearer configuration
+  // MTN GPRS configuration
   if (networkCode.equals("62130")) {  
     ATRun("+SAPBR=3,1,\"APN\",\"web.gprs.mtnnigeria.net\"");
     ATRun("+SAPBR=3,1,\"PWD\",\"web\"");
@@ -213,7 +236,7 @@ void setupGprsConfig(){
 
 void openGprsConn() {
   ATRun("+SAPBR=0,1");
-  ATRun("+SAPBR=1,1");
+  ATRun("+SAPBR=1,1", 5000);
   // open Http connection
   ATRun("+HTTPINIT");
 }
@@ -226,46 +249,58 @@ void closeGprsConn() {
 }
 
 void sendHttpRequest() {
+  const int GET_REQUEST = 0;
+  const int POST_REQUEST = 1;
+
   ATRun("+HTTPPARA=\"CID\",1");
   ATRun("+HTTPPARA=\"REDIR\",1");
   ATRun("+HTTPPARA=\"CONTENT\",\"application/json\"");
   ATRun("+HTTPPARA=\"URL\",\"" +  resource + "\"");
-  ATRun("+HTTPPARA=\"Device-Id\",\"" +  deviceId + "\"");
+  ATRun("+HTTPPARA=\"USERDATA\",\"Device-Id: " + deviceId + "\"");
   
-  if (httpActionType == 1) {
-    ATRun("+HTTPDATA=" + String(postData.length()) + ",20000", false);
-    SerialAT.print(postData);
+  if (httpActionType == GET_REQUEST) {
+    ATRun("+HTTPACTION=0", false);
+  } else if (httpActionType == POST_REQUEST) {
+    ATRun("+HTTPDATA=" + String(postData.length()) + ",10000", 3000, "DOWNLOAD\r\n");
+    ATRun(postData, 3000, "OK\r\n", true);
+    ATRun("+HTTPACTION=1");
   }
-  ATRun("+HTTPACTION=" + String(httpActionType), false);
 }
 
 void getHttpResponseStatus() {
   httpStatus = ATParser(",", 1, 2);
   httpStatus.trim();
+  SerialMon.println("");
   SerialMon.println("http status: " + httpStatus);
   ATRun("+HTTPREAD", false);
 }
 
 void getHttpResponseData() {
-  const int COMMAND_REQUEST = 1;
-  const int STATUS_REQUEST = 2;
-  const int QUANTITY_REQUEST = 3;
-  closeGprsConn();
+  const int SEND_SMS_REQUEST = 1;
+  const int STATUS_REQUEST = 3;
+  const int QUANTITY_REQUEST = 4;
+  const int CONTACT_REQUEST = 5;
+  //String dataLength = ATParser("\r\n", 0);
+  //dataLength.trim();
+  //int dataLength.toInt();
   responseData = ATParser("\r\n", 1, 2);
   responseData.trim();
   SerialMon.println("Response: " + responseData);
-  if (httpRequestType == COMMAND_REQUEST) {
-    replyMessage();
+  closeGprsConn();
+  if (httpRequestType == SEND_SMS_REQUEST) {
+    handleMessageReply();
   } else if (httpRequestType == STATUS_REQUEST) {
     storeStatus();
   } else if (httpRequestType == QUANTITY_REQUEST) {
     storeQuantity();
+  } else if (httpRequestType == CONTACT_REQUEST) {
+    storeContact();
   }
-
+  httpRequestType = 0;
   strBuffer = "";
 }
 
-void sendSms(String number, String message) {
+void sendSms(const String& message, const String& number) {
   String command = "AT+CMGS=\"";
   command.concat(number);
   command.concat("\"\r");
@@ -276,64 +311,119 @@ void sendSms(String number, String message) {
   SerialAT.println(command);
 }
 
-void replyMessage() {
-  if (httpStatus == "200") {
-    const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(4);
-    StaticJsonDocument<capacity> doc;
+void addRequestToQueue(const String& message, const String& phoneNumber, int action) {
+  int freeSlot = -1;
+  // find free slot
+  for (int i = 0; i < 5; i++) {
+    if ( requestQueue[i].action == 0) {
+      freeSlot = i;
+    }
+  }
+  if (freeSlot != -1) {
+    requestQueue[freeSlot].action = action;
+    requestQueue[freeSlot].message = message;
+    requestQueue[freeSlot].phoneNumber = phoneNumber;
+  }
+}
 
-    DeserializationError err = deserializeJson(doc, responseData);
-    // Parse succeeded?
-    if (!err) {
-      String reply = doc["reply"].as<String>();
-      String phone_number = doc["phone_number"].as<String>();
-      String device_id = doc["data"]["device_id"].as<String>();
-      if (device_id) {
-        deviceId = device_id;
-        setEepromData();
+void handleMessageReply() {
+  String device_id, message, phoneNumber;
+  const int REPLY_SMS_REQUEST = 2;
+  const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(4);
+  StaticJsonDocument<capacity> doc;
+  DeserializationError err = deserializeJson(doc, responseData);
+  // Parse succeeded?
+  if (!err) {
+    device_id = doc["data"]["device_id"].as<String>();
+    if (device_id.length() > 0) {
+      deviceId = device_id;
+      setEepromData();
+    }
+    message = doc["reply"].as<String>();
+    phoneNumber = doc["phone_number"].as<String>();
+    addRequestToQueue(message, phoneNumber, REPLY_SMS_REQUEST);
+  } else {
+    SerialMon.print("deserializeJson failed");
+    SerialMon.println(err.f_str());
+  }
+}
+void clearRequest(int request) {
+  requestQueue[request].action = 0;
+  requestQueue[request].message = "";
+  requestQueue[request].phoneNumber = "";
+}
+void processRequest() {
+  const int NO_REQUEST = 0;
+  const int SEND_SMS_REQUEST = 1;
+  const int REPLY_SMS_REQUEST = 2;
+  const int CLIENT_UPDATE_REQUEST = 6;
+  const int GET = 0;
+  if (requestQueue[nextRequest].action == SEND_SMS_REQUEST) {
+    const size_t capacity = JSON_OBJECT_SIZE(2);
+    StaticJsonDocument<capacity> doc;
+    
+    openGprsConn();
+    httpRequestType = SEND_SMS_REQUEST;
+    httpActionType = 1;
+    resource = "http://nazifapis.pythonanywhere.com/api/v1/smsrequest/";
+    postData = "";
+    doc["message"] = requestQueue[nextRequest].message.c_str();
+    doc["phone_number"] = requestQueue[nextRequest].phoneNumber.c_str();
+    serializeJson(doc, postData); // serialize message post
+    SerialMon.println("post Data: " + postData);
+    sendHttpRequest();
+    clearRequest(nextRequest);
+    if (++nextRequest > 5) {
+      nextRequest = 0;
+    }
+  }
+  else if(requestQueue[nextRequest].action == REPLY_SMS_REQUEST) {
+    if (requestQueue[nextRequest].message && requestQueue[nextRequest].phoneNumber) {
+      sendSms(requestQueue[nextRequest].message, requestQueue[nextRequest].phoneNumber);
+    }
+    clearRequest(nextRequest);
+    if (++nextRequest > 5) {
+      nextRequest = 0;
+    }
+  }
+  else if(requestQueue[nextRequest].action == CLIENT_UPDATE_REQUEST) {
+    sendSms(contact.message, contact.phone_numbers[contact.current]); 
+    contact.current++; // move to the next number
+    if (contact.current == contact.count) {
+      if(contact.next.length() != 0){
+        runRequest = updateContact; // fetch the next contact list
+      } else {
+        clearRequest(nextRequest);
+        if (++nextRequest > 5) {
+          nextRequest = 0;
+        }
       }
-      sendSms(phone_number, reply);
-      
-    } else {
-      SerialMon.print("deserializeJson failed");
-      SerialMon.println(err.f_str());
     }
   }
 }
 
-void processRequest(String contactNumber, String message) {
-  const size_t capacity = JSON_OBJECT_SIZE(2);
-  StaticJsonDocument<capacity> doc;
-  const int COMMAND_REQUEST = 1;
-  String reply;
-
-  message.toLowerCase();
-  if (message.startsWith("wd")) {
-    openGprsConn();
-    httpRequestType = COMMAND_REQUEST;
-    httpActionType = 1;
-    resource = "http://nazifapis.pythonanywhere.com/api/v1/smsrequest";
-
-    postData = "";
-    doc["message"] = message;
-    doc["phone_number"] = contactNumber;
-    serializeJson(doc, postData);
-    SerialMon.println("post Data: " + postData);
-    sendHttpRequest();
-  }
-}
-
 void parseMessage() {
-  String contactNumber  = ATParser("\"", 1, 2);
+  const int SEND_SMS_REQUEST = 1;
+  String phoneNumber  = ATParser("\"", 1, 2);
   String message  = ATParser("\r\n", 1, 2);
   
   message.trim();
-
-  SerialMon.println("number: " + contactNumber);
+  message.toLowerCase();
+  SerialMon.println("");
+  SerialMon.println("number: " + phoneNumber);
   SerialMon.println("message: " + message);
-  processRequest(contactNumber, message);
+  // serialize json
+  if (message.startsWith("wd")) {
+    addRequestToQueue(message, phoneNumber, SEND_SMS_REQUEST);
+  }
 }
 
 void storeStatus() {
+  if (!httpStatus.equals("200")) {
+    SerialMon.println("");
+    SerialMon.println("http request failed");
+    return;
+  }
   const size_t capacity = JSON_OBJECT_SIZE(2) + JSON_OBJECT_SIZE(5);
   StaticJsonDocument<capacity> doc;
   DeserializationError err = deserializeJson(doc, responseData);
@@ -353,7 +443,7 @@ void storeStatus() {
 }
 
 void updateStatus() {
-  const int STATUS_REQUEST = 2;
+  const int STATUS_REQUEST = 3;
   const int GET = 0;
 
   openGprsConn();
@@ -365,6 +455,11 @@ void updateStatus() {
 }
 
 void storeQuantity() {
+  if (!httpStatus.equals("200")) {
+    SerialMon.println("");
+    SerialMon.println("http request failed");
+    return;
+  }
   const size_t capacity = JSON_OBJECT_SIZE(2);
   StaticJsonDocument<capacity> doc;
   DeserializationError err = deserializeJson(doc, responseData);
@@ -381,13 +476,13 @@ void storeQuantity() {
 void updateQuantity() {
   const size_t capacity = JSON_OBJECT_SIZE(2);
   StaticJsonDocument<capacity> doc;
-  const int QUANTITY_REQUEST = 3;
+  const int QUANTITY_REQUEST = 4;
   const int POST = 1;
 
   openGprsConn();
   httpRequestType = QUANTITY_REQUEST;
   httpActionType = POST;
-  resource = "http://nazifapis.pythonanywhere.com/api/v1/quantity";
+  resource = "http://nazifapis.pythonanywhere.com/api/v1/quantity/";
 
   postData = "";
   
@@ -398,6 +493,51 @@ void updateQuantity() {
   
   serializeJson(doc, postData);
   SerialMon.println("post Data: " + postData);
+  sendHttpRequest();
+}
+
+void initializeHttp() {
+  if (httpActionType == 0) {
+    openGprsConn();
+    sendHttpRequest();
+  }
+}
+void storeContact(){
+  if (!httpStatus.equals("200")) {
+    SerialMon.println("");
+    SerialMon.println("http request failed");
+    return;
+  }
+  const int CLIENT_UPDATE_REQUEST = 6;
+  const size_t capacity = JSON_OBJECT_SIZE(4) + JSON_OBJECT_SIZE(2) + JSON_ARRAY_SIZE(5);
+  StaticJsonDocument<capacity> doc;
+  DeserializationError err = deserializeJson(doc, responseData);
+  // Parse succeeded?
+  if (!err) {
+    contact.current = 0;
+    contact.count = doc["count"].as<int>();
+    contact.next = doc["next"].as<String>();
+    contact.previous = doc["previous"].as<String>();
+    contact.message = doc["results"]["reply"].as<String>();
+    for(int i = 0; i < contact.count; i++) {
+      strlcpy(contact.phone_numbers[i], doc["results"]["phone_numbers"][i] | "", 15);
+    }
+    addRequestToQueue("empty", "empty", CLIENT_UPDATE_REQUEST);
+  } else {
+    SerialMon.print("deserializeJson failed");
+    SerialMon.println(err.f_str());
+  }
+}
+
+void updateContact() {
+  const int CONTACT_REQUEST = 5;
+  const int GET = 0;
+
+  openGprsConn();
+  httpRequestType = CONTACT_REQUEST;
+  httpActionType = GET;
+  resource = contact.next;
+
   sendHttpRequest();
 }
 
@@ -425,7 +565,7 @@ boolean waitNetworkReg() {
   SerialMon.println("Waiting for network...");
   int timer = millis();
   
-  while((millis() - timer < 12000)) {
+  while((millis() - timer <= 12000)) {
     if (checkNetworkReg()) {
       SerialMon.println("Network available");
       return true;
@@ -437,13 +577,13 @@ boolean waitNetworkReg() {
 }
 
 String checkSignalQuality() {
-    ATRun("+CSQ", 1000, "+CSQ:");
-    String signalQ = ATParser(",", 0, 1);
-    signalQ.trim();
-    signalQ = (signalQ.toDouble() / 31 * 100) + String("%");
-    SerialMon.println("");
-    SerialMon.println("Signal quality: " + signalQ);
-    return signalQ;
+  ATRun("+CSQ", 1000, "+CSQ:");
+  String signalQ = ATParser(",", 0, 1);
+  signalQ.trim();
+  signalQ = (signalQ.toDouble() / 31 * 100) + String("%");
+  SerialMon.println("");
+  SerialMon.println("Signal quality: " + signalQ);
+  return signalQ;
 }
 
 void tare() {
@@ -468,60 +608,107 @@ void calibration() {
 }
 
 void pressHandler (BfButton *btn, BfButton::press_pattern_t pattern) {
+  /**/
   int id = btn->getID();
-  Serial.print(String("button ") + id);
+  SerialMon.print(String("button ") + id);
 
   if (id == 0) {
     if (pattern == BfButton::SINGLE_PRESS) {
-      Serial.println(" pressed.");
+      // display status
+      SerialMon.println(" pressed.");
       getEepromData();
+      runRequest = initializeHttp;
     } else if (pattern == BfButton::DOUBLE_PRESS) {
-      Serial.println(" double pressed.");
+      SerialMon.println(" double pressed.");
+      runRequest = updateStatus;
     } else if (pattern == BfButton::LONG_PRESS) {
-      Serial.println(" long pressed.");
+      SerialMon.println(" long pressed.");
     }
   } else if(id == 1) {
-    if (pattern == BfButton::SINGLE_PRESS && httpRequestType == 0) {
-      Serial.println(" pressed.");
-      //getEepromData();
-      updateQuantity();
+     //save data to database  
+    if (pattern == BfButton::SINGLE_PRESS) {
+      SerialMon.println(" pressed.");
+      runRequest = updateQuantity;
     } else if (pattern == BfButton::DOUBLE_PRESS) {
-      Serial.println(" double pressed.");
+      SerialMon.println(" double pressed.");
     } else if (pattern == BfButton::LONG_PRESS) {
-      Serial.println(" long pressed.");
+      SerialMon.println(" long pressed.");
     }
   } else if(id == 2) {
+    // send sms 
     if (pattern == BfButton::SINGLE_PRESS) {
-      Serial.println(" pressed.");
-      
-    } else if (pattern == BfButton::DOUBLE_PRESS && httpRequestType == 0) {
-      Serial.println(" double pressed.");
-      updateStatus();
+      SerialMon.println(" pressed.");
+      runRequest = updateContact;
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      SerialMon.println(" double pressed.");
     } else if (pattern == BfButton::LONG_PRESS) {
-      Serial.println(" long pressed.");
+      SerialMon.println(" long pressed.");
     }
   } else if(id == 3) {
-    if (pattern == BfButton::SINGLE_PRES) {
-      Serial.println(" pressed.");
-       
-    } else if (pattern == BfButton::DOUBLE_PRESSS && httpRequestType == 0) {
-      Serial.println(" double pressed.");
+    // clear database records
+    if (pattern == BfButton::SINGLE_PRESS) {
+      SerialMon.println(" pressed.");
       quantityData.available_quantity = 0.00;
       strlcpy(quantityData.unit, "GRAMME", 24);
-      updateQuantity();
+      runRequest = updateQuantity;
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      SerialMon.println(" double pressed.");
     } else if (pattern == BfButton::LONG_PRESS) {
-      Serial.println(" long pressed.");
-      reset();
+      SerialMon.println(" long pressed.");
     }
   } else if(id == 4) {
+     
     if (pattern == BfButton::SINGLE_PRESS) {
-      Serial.println(" pressed.");
+      // tare 
+      SerialMon.println(" pressed.");
       tare();
     } else if (pattern == BfButton::DOUBLE_PRESS) {
-      Serial.println(" double pressed.");
+      SerialMon.println(" double pressed.");
     } else if (pattern == BfButton::LONG_PRESS) {
-      Serial.println(" long pressed.");
+      // calibrate 
+      SerialMon.println(" long pressed.");
       calibration();
+    }
+  } else if(id == 5) {
+    
+    if (pattern == BfButton::SINGLE_PRESS) {
+      //cancel operation
+      SerialMon.println(" pressed.");
+    } else if (pattern == BfButton::DOUBLE_PRESS) {
+      SerialMon.println(" double pressed."); 
+    } else if (pattern == BfButton::LONG_PRESS) {
+       // reset
+      SerialMon.println(" long pressed.");
+      reset();
+    }
+  }
+}
+
+void ATLoop() {
+  while(SerialAT.available()) {
+    charBuffer = SerialAT.read();
+    SerialMon.write(charBuffer);
+    strBuffer.concat(charBuffer);
+
+    if(strBuffer.endsWith("+CMT:")) {
+      parseMessage();
+    }
+    if (strBuffer.endsWith("+HTTPACTION:")) {
+      getHttpResponseStatus();
+    }
+    if (strBuffer.endsWith("+HTTPREAD:")) {
+      getHttpResponseData();
+    }
+    if (strBuffer.endsWith("+CREG:")) {
+      String regStatus  = ATParser("\r\n", 0);
+      regStatus.trim();
+      if (regStatus.equals("1") || regStatus.equals("5")) {
+        checkSignalQuality();
+        // sms settings
+        ATRun("+CMGF=1"); // change sms message format to text mode
+        ATRun("+CNMI=2,2,0,0,0"); // send incoming sms directly to serial buffer
+        setupGprsConfig();
+      }
     }
   }
 }
@@ -543,7 +730,6 @@ void setup()
   isGsmModuleActive = initializeGsmModem();
   
   if (isGsmModuleActive) {
-    
     if( waitNetworkReg() ) {
       
       checkSignalQuality();
@@ -557,6 +743,7 @@ void setup()
     else {
       SerialMon.print("Network registration failed");
     }
+    ATRun("+CREG=1");
   }
   
   //rtc_clk_cpu_freq_set(RTC_CPU_FREQ_80M);
@@ -581,31 +768,38 @@ void setup()
   LoadCell.setCalFactor(calibrationValue); // set calibration value (float)
   
   //integrate event handlers to buttons and add buttons to event manager
-  btn1.onPress(pressHandler); // custom timeout for 1 second
+  btn1.onPress(pressHandler); // display status 
   btnManager.addButton(&btn1, 180, 250);
-  btn2.onPress(pressHandler); // custom timeout for 1 second
+  btn2.onPress(pressHandler); //save data to database
   btnManager.addButton(&btn2, 490, 550);
-  btn3.onPress(pressHandler); 
+  btn3.onPress(pressHandler); // send sms
   btnManager.addButton(&btn3, 750, 850);
-  btn4.onPress(pressHandler)    // default timeout
-      .onPressFor(pressHandler, 5000); // custom timeout for 1 second
+  btn4.onPress(pressHandler);    // clear database records
   btnManager.addButton(&btn4, 900, 1100);
-  btn5.onPress(pressHandler)    // default timeout
-      .onPressFor(pressHandler, 5000); // custom timeout for 1 second
-  btnManager.addButton(&btn4, 1250, 1500);
+  btn5.onPress(pressHandler)    // tare
+      .onPressFor(pressHandler, 5000); // calibrate
+  btnManager.addButton(&btn5, 1250, 1500);
+  btn6.onPress(pressHandler) //cancel operation
+      .onPressFor(pressHandler, 5000); // reset
+  btnManager.addButton(&btn6, 1750, 1850);
+      
   //.onPressFor(pressHandler, 5000)// custom timeout for 1 second
   //.onDoublePress(pressHandler) 
   btnManager.begin();
+
+  // initial request queue items action to none
+  for (int i = 0; i < 5; i++) {
+    requestQueue[i].action = 0;
+  }
+  // default request processing function pointer to process sms request
+  runRequest = processRequest;
 
   SerialMon.println("Startup is complete");
 }
 
 void loop()
 {
-  //int z;
-  //z = analogRead(btnPin);
-  //if (z > 100) lcd.print(z);
-  btnManager.printReading(btnPin);
+  //btnManager.printReading(btnPin);
   btnManager.loop();
 
   if(isGsmModuleActive) {
@@ -615,6 +809,11 @@ void loop()
       SerialAT.write(SerialMon.read());
     }
     ATLoop();
+    // && httpRequestType == 0
+    if (SerialAT.available() == 0 && httpRequestType == 0){
+      (*runRequest)();
+      runRequest = processRequest;
+    }
   }
     
   /**/
